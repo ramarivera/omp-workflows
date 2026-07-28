@@ -1,0 +1,15 @@
+[tasks.install]
+description = "Install pinned dependencies"
+run = "pnpm install"
+
+[tasks.build]
+description = "Emit declarations and source maps"
+run = "pnpm build"
+
+[tasks.typecheck]
+description = "Typecheck source and tests"
+run = "pnpm typecheck"
+
+[tasks.test]
+description = "Run scaffold contract tests"
+run = "pnpm test"

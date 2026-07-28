@@ -1,0 +1,64 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # Cross-reference: toolbox Pi extension scaffold trusted-publishing template.
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@735343b667d3e5f658f44d6f0eacb8f0f5f7f9f7
+        with:
+          bun-version: '1.2.19'
+      - run: corepack prepare pnpm@10.12.1 --activate
+      - run: npm install --global npm@11.5.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run release:check
+      - name: Prepare isolated Luna model catalog
+        run: |
+          mkdir -p "${RUNNER_TEMP}/omp-agent"
+          cp scripts/acceptance/models.yml "${RUNNER_TEMP}/omp-agent/models.yml"
+      - name: Run live OMP/Luna acceptance matrix (9 scenarios x 3)
+        env:
+          OMP_AUTH_GATEWAY_TOKEN: ${{ secrets.OMP_AUTH_GATEWAY_TOKEN }}
+          OMP_LUNA_ACCEPTANCE_GIT_TAG: ${{ github.ref_name }}
+          OMP_LUNA_ACCEPTANCE_SCRATCH: ${{ runner.temp }}
+          OMP_LUNA_ACCEPTANCE_SEED_AGENT_DIR: ${{ runner.temp }}/omp-agent
+        run: pnpm run acceptance:luna
+      - name: Verify commit-bound Luna acceptance artifact
+        env:
+          OMP_LUNA_ACCEPTANCE_GIT_TAG: ${{ github.ref_name }}
+        run: pnpm run acceptance:luna:verify
+      - name: Resolve package metadata
+        id: package
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Check whether version already exists
+        id: npm
+        run: |
+          if npm view "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish with npm trusted publishing
+        if: steps.npm.outputs.exists == 'false'
+        run: npm publish --access public --provenance
+      - uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
+        with:
+          generate_release_notes: true
+          files: .artifacts/luna-acceptance.json

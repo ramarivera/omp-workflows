@@ -1,0 +1,79 @@
+{
+  "name": "@ramarivera/omp-workflows",
+  "version": "0.1.0",
+  "description": "Durable, inspectable dynamic workflows for Oh My Pi.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ramiro Rivera",
+  "homepage": "https://github.com/ramarivera/omp-workflows#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ramarivera/omp-workflows.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ramarivera/omp-workflows/issues"
+  },
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "extension",
+    "workflows",
+    "orchestration"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/extension.js"
+    },
+    "./workflows/*": "./workflows/*"
+  },
+  "omp": {
+    "extensions": [
+      "./dist/extension.js"
+    ],
+    "workflows": "./workflows"
+  },
+  "files": [
+    "dist",
+    "workflows",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "bun test",
+    "release:check": "bun run typecheck && bun run lint && bun test && bun run build",
+    "acceptance:luna": "OMP_LUNA_ACCEPTANCE_LIVE=1 tsx scripts/run-luna-acceptance.ts --rounds=3",
+    "acceptance:luna:verify": "tsx scripts/verify-luna-acceptance.ts",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "acorn": "8.15.0",
+    "acorn-walk": "8.3.4",
+    "ajv": "8.17.1"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": ">=17.1.6 <18"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.0",
+    "@oh-my-pi/pi-coding-agent": "17.1.7",
+    "@types/bun": "1.2.21",
+    "tsx": "4.19.4",
+    "typescript": "5.8.3"
+  },
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}

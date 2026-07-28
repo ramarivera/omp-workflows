@@ -1,0 +1,12 @@
+import { defineWorkflow } from '@ramarivera/omp-workflows';
+type Args = { request: string; base: string; maxPatches?: number; apply?: boolean };
+type Part = { id: string; paths: string[]; goal: string };
+type Patch = Part & { patch: string; head: string };
+type Result = { status: 'captured' | 'applied' | 'blocked'; patches: Patch[]; integrationRef: string; conflicts: string[]; complete: boolean };
+const partSchema = { type: 'object' } as const; const patchSchema = { type: 'object' } as const; const resultSchema = { type: 'object' } as const;
+export const workflow = defineWorkflow<Args, Result>({ name: 'large-migration', version: 1, args: { type: 'object', properties: { request: { type: 'string', minLength: 1 }, base: { type: 'string', minLength: 1 }, maxPatches: { type: 'integer', minimum: 1, maximum: 20 }, apply: { type: 'boolean' } }, required: ['request', 'base'], additionalProperties: false }, limits: { maxConcurrency: 6, maxAgents: 30, maxOutputTokens: 180_000, maxRuntimeMs: 90 * 60_000 }, async run({ args, agent, parallel, phase }) {
+ phase('Partition migration'); const plan = await agent<Part[]>('Partition into independent non-overlapping patches.', { id: 'partition', agent: 'scout', model: 'fast', effort: 'high', toolset: ['repo-read'], isolation: { mode: 'none' }, apply: false, schema: { type: 'array', items: partSchema, maxItems: args.maxPatches ?? 12 }, schemaMode: 'strict' });
+ phase('Capture isolated patches'); const patches = await parallel(plan.map((part) => () => agent<Patch>(`Implement patch ${part.id}: ${part.goal}; capture only.`, { id: `patch:${part.id}`, agent: 'implementer', model: 'coding', effort: 'high', toolset: ['repo-read', 'repo-write'], isolation: { mode: 'worktree' }, apply: false, schema: patchSchema, schemaMode: 'strict', input: { part, base: args.base } })), false);
+ phase('Integrate with completeness gate'); const result = await agent<Result>('Integrate captured patches; fail closed on conflicts and report all patches.', { id: 'integration', agent: 'integrator', model: 'coding', effort: 'high', toolset: ['repo-read', 'repo-write'], isolation: { mode: 'worktree' }, apply: args.apply ?? false, schema: resultSchema, schemaMode: 'strict', input: { request: args.request, base: args.base, patches, apply: args.apply ?? false } });
+ if (!result.complete || result.patches.length !== patches.length) throw new Error('Migration completeness gate failed'); return result;
+} });

@@ -1,0 +1,13 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.2.0/schema.json",
+	"files": { "includes": ["src/**/*.ts", "tests/**/*.ts"] },
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true,
+			"complexity": { "noForEach": "error" }
+		}
+	},
+	"formatter": { "enabled": true, "indentStyle": "tab" },
+	"assist": { "actions": { "source": { "organizeImports": "on" } } }
+}

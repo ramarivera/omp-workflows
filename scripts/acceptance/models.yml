@@ -1,0 +1,19 @@
+providers:
+  openai-codex:
+    api: openai-completions
+    apiKey: OMP_AUTH_GATEWAY_TOKEN
+    baseUrl: https://omp-gateway.ai.roxasroot.net/v1
+    compat:
+      maxTokensField: max_tokens
+      supportsDeveloperRole: false
+      supportsReasoningEffort: true
+      supportsUsageInStreaming: true
+    models:
+      - id: gpt-5.6-luna
+        name: GPT-5.6 Luna (OMP gateway)
+        reasoning: true
+        input:
+          - text
+          - image
+        contextWindow: 114688
+    name: OMP Auth Gateway
