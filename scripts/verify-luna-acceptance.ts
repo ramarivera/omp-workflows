@@ -158,12 +158,11 @@ export async function verifyLunaAcceptanceArtifact(
 	if (value.packageVersion !== (options.packageVersion ?? PLUGIN_VERSION)) {
 		errors.push(`artifact.packageVersion must match installed package version ${(options.packageVersion ?? PLUGIN_VERSION)}`);
 	}
-	const expectedGitCommit = options.expectedGitCommit ?? process.env.GITHUB_SHA;
+	const expectedGitCommit = options.expectedGitCommit;
 	if (expectedGitCommit && value.gitCommit !== expectedGitCommit) {
 		errors.push(`artifact.gitCommit must match ${expectedGitCommit}`);
 	}
-	const expectedGitTag =
-		options.expectedGitTag ?? process.env.OMP_LUNA_ACCEPTANCE_GIT_TAG;
+	const expectedGitTag = options.expectedGitTag;
 	if (expectedGitTag && value.gitTag !== expectedGitTag) {
 		errors.push(`artifact.gitTag must match ${expectedGitTag}`);
 	}
@@ -219,7 +218,11 @@ export async function verifyLunaAcceptanceArtifact(
 export async function main(): Promise<void> {
 	const artifactPath = process.env.OMP_LUNA_ACCEPTANCE_ARTIFACT ?? ".artifacts/luna-acceptance.json";
 	const artifact = JSON.parse(await readFile(artifactPath, "utf8")) as unknown;
-	await verifyLunaAcceptanceArtifact(artifact, { artifactPath });
+	await verifyLunaAcceptanceArtifact(artifact, {
+		artifactPath,
+		expectedGitCommit: process.env.GITHUB_SHA,
+		expectedGitTag: process.env.OMP_LUNA_ACCEPTANCE_GIT_TAG,
+	});
 	console.log(`Verified Luna acceptance artifact: ${artifactPath}`);
 }
 
