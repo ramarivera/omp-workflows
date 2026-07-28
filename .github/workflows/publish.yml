@@ -20,7 +20,7 @@ jobs:
           node-version: '24.x'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
-      - uses: oven-sh/setup-bun@735343b667d3e5f658f44d6f0eacb8f0f5f7f9f7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: '1.2.19'
       - run: corepack prepare pnpm@10.12.1 --activate
