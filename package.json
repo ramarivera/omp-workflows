@@ -52,7 +52,7 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "bun test",
-    "release:check": "bun run typecheck && bun run lint && bun test && bun run build",
+    "release:check": "bun run build && bun run typecheck && bun run lint && bun test",
     "acceptance:luna": "OMP_LUNA_ACCEPTANCE_LIVE=1 tsx scripts/run-luna-acceptance.ts --rounds=3",
     "acceptance:luna:verify": "tsx scripts/verify-luna-acceptance.ts",
     "prepack": "pnpm build"
