@@ -21,6 +21,9 @@ export async function atomicWrite(
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
 	await fs.rename(temp, file);
+	// Windows does not support fsync on directory handles; the atomic rename
+	// above remains the strongest available durability boundary there.
+	if (process.platform === "win32") return;
 	const dir = await fs.open(path.dirname(file), "r");
 	try {
 		await dir.sync();

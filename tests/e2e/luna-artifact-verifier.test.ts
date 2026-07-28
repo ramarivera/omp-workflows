@@ -60,7 +60,7 @@ async function fixture(): Promise<{
 			extensionSha256: createHash("sha256").update(extension).digest("hex"),
 			model: EXPECTED_MODEL,
 			thinking: EXPECTED_THINKING,
-			packageVersion: "0.1.0",
+			packageVersion: "0.1.1",
 			scenarios: [...EXPECTED_SCENARIOS],
 			runs,
 			allPassed: true,
@@ -73,7 +73,7 @@ async function fixture(): Promise<{
 async function verify(artifact: unknown, extensionPath: string): Promise<void> {
 	await verifyLunaAcceptanceArtifact(artifact, {
 		extensionPath,
-		packageVersion: "0.1.0",
+		packageVersion: "0.1.1",
 	});
 }
 

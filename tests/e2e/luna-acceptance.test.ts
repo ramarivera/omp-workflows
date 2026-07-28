@@ -188,18 +188,18 @@ describe("Luna acceptance contract", () => {
 		);
 		const artifact = {
 			...syntheticArtifact(runs, extensionSha256),
-			gitTag: "v0.1.0",
+			gitTag: "v0.1.1",
 		};
 		await verifyLunaAcceptanceArtifact(artifact, {
 			extensionPath: resolve("dist/extension.js"),
 			expectedGitCommit: "0".repeat(40),
-			expectedGitTag: "v0.1.0",
+			expectedGitTag: "v0.1.1",
 		});
 		await expect(
 			verifyLunaAcceptanceArtifact(artifact, {
 				extensionPath: resolve("dist/extension.js"),
 				expectedGitCommit: "1".repeat(40),
-				expectedGitTag: "v0.1.1",
+				expectedGitTag: "v0.1.2",
 			}),
 		).rejects.toThrow(/gitCommit.*gitTag/s);
 	});
@@ -237,13 +237,14 @@ describe("Luna acceptance contract", () => {
 		).rejects.toThrow(/assertions must all be true/);
 	});
 	test("runAcceptanceCase links the package into the isolated profile before one-shot evaluation", async () => {
+		const packageRoot = resolve("/built/package");
 		let received: string[] = [];
 		let installEnv: NodeJS.ProcessEnv | undefined;
 		let evaluated: string[] = [];
 		const run = await runAcceptanceCase("parallel-scheduling", 1, {
 			scratchRoot: await Bun.$`mktemp -d`.text().then((value) => value.trim()),
 			omp: "omp-under-test",
-			packageRoot: "/built/package",
+			packageRoot,
 			extension: "dist/extension.js",
 			pluginLinkRunner: async ({ command, env }) => {
 				received = command;
@@ -259,12 +260,7 @@ describe("Luna acceptance contract", () => {
 				};
 			},
 		});
-		expect(received).toEqual([
-			"omp-under-test",
-			"plugin",
-			"link",
-			"/built/package",
-		]);
+		expect(received).toEqual(["omp-under-test", "plugin", "link", packageRoot]);
 		expect(installEnv?.HOME).toBeString();
 		expect(installEnv?.OMP_PROFILE).toBeString();
 		expect(evaluated).not.toContain("--plugin-dir");
