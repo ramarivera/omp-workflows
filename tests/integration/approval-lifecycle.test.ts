@@ -546,10 +546,14 @@ describe("approval lifecycle", () => {
 		};
 		try {
 			await events.session_start?.({}, ctx);
+			expect(widgets).toEqual([]);
+			await events.input?.({ source: "interactive", text: "workflowz" }, ctx);
+			expect(typeof widgets.at(-1)).toBe("function");
 			await events.session_before_switch?.({}, ctx);
+			expect(widgets.at(-1)).toBeUndefined();
 			await events.session_start?.({}, ctx);
+			await events.input?.({ source: "interactive", text: "workflowz" }, ctx);
 			await events.session_shutdown?.({}, ctx);
-			expect(widgets.some((content) => Array.isArray(content))).toBe(true);
 			expect(widgets.at(-1)).toBeUndefined();
 		} finally {
 			await cleanup(ctx.cwd);

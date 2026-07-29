@@ -23,7 +23,7 @@ import { runWorkflowProbe } from "./probe.js";
 import { WorkflowController } from "./runtime/controller.js";
 import { applyGitPatch, captureGitChanges } from "./runtime/git-isolation.js";
 import { createWorkflowHost } from "./runtime/subagent-runner.js";
-import type { WorkflowDefinition } from "./runtime/types.js";
+import type { WorkflowDefinition, WorkflowRunStatus } from "./runtime/types.js";
 import { workflowApprovalPath, workflowScopePath } from "./storage/paths.js";
 import {
 	registerWorkflowAuthoringTool,
@@ -37,6 +37,11 @@ import {
 	formatApprovalMessage,
 	workflowHash,
 } from "./ui/approval.js";
+import {
+	containsWorkflowMagicWord,
+	createWorkflowIndicator,
+	type WorkflowIndicatorController,
+} from "./ui/indicator.js";
 import {
 	DEFAULT_UI_MODE,
 	resolveUiMode,
@@ -55,6 +60,7 @@ type SessionState = {
 	warnings: readonly string[];
 	styler: SemanticStyler;
 	workflows: Array<{ name: string; version?: number }>;
+	indicator: WorkflowIndicatorController;
 };
 
 function stores(cwd: string): { project: ApprovalStore; user: ApprovalStore } {
@@ -96,6 +102,11 @@ const TOOLSET_PROFILES: Readonly<Record<string, readonly string[]>> = {
 	"repo-read": ["read", "grep", "glob", "lsp"],
 	"repo-write": ["read", "grep", "glob", "lsp", "edit", "write", "bash"],
 	"web-research": ["read", "web_search"],
+};
+const TERMINAL_RUN_STATUSES: Partial<Record<WorkflowRunStatus, true>> = {
+	completed: true,
+	failed: true,
+	cancelled: true,
 };
 
 function resolveToolset(pi: ExtensionAPI, name: string): string[] | undefined {
@@ -227,37 +238,55 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 				.map((run) => session.controller.pause(run.id)),
 		);
 	};
-	const clearWidget = (ctx: ExtensionContext | undefined): void => {
-		if (!ctx?.hasUI) return;
-		ctx.ui.setWidget("omp-workflow-status", undefined);
+	const clearWidget = (session: SessionState | undefined): void => {
+		session?.indicator.dispose();
 	};
 	const refreshWidget = async (session: SessionState): Promise<void> => {
-		if (!session.ctx.hasUI) return;
-		const runs = await session.controller.list();
+		if (!session.ctx.hasUI || state.current !== session) return;
+		const runs = (await session.controller.list()).filter(
+			(run) => TERMINAL_RUN_STATUSES[run.status] !== true,
+		);
+		if (state.current !== session) return;
+		if (runs.length === 0) {
+			session.indicator.clear();
+			return;
+		}
 		const body = renderWorkflowStatus(runs, session.mode, {
 			maxWidth: 78,
 			styler: session.styler,
 			availableWorkflows: session.workflows,
+			includeEmptyState: false,
 		});
-		const header = session.warnings.length
-			? `${session.warnings.join("\n")}\n`
-			: "";
-		session.ctx.ui.setWidget("omp-workflow-status", [`${header}${body}`], {
-			placement: "belowEditor",
-		});
+		session.indicator.show(body.split("\n"));
 	};
 
 	if (canRegister) {
-		pi.on("session_before_switch", async (_event, ctx) => {
+		pi.on("session_before_switch", async (_event, _ctx) => {
 			if (!state.current) return;
 			await pauseRunning(state.current);
 			state.current.unsubscribe?.();
 			state.current.unsubscribe = undefined;
-			clearWidget(ctx);
+			clearWidget(state.current);
 			await state.current.controller.dispose();
 			state.current = undefined;
 		});
 	}
+	pi.on("input", (event) => {
+		const session = state.current;
+		if (
+			!session?.ctx.hasUI ||
+			event.source !== "interactive" ||
+			!containsWorkflowMagicWord(event.text)
+		) {
+			return;
+		}
+		session.indicator.show(["preparing workflow request"]);
+	});
+
+	pi.on("agent_end", async () => {
+		const session = state.current;
+		if (session) await refreshWidget(session);
+	});
 	pi.on("session_start", async (_event, ctx) => {
 		if (state.current) return;
 		authoringOptions.cwd = ctx.cwd;
@@ -525,6 +554,10 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 		definitions.completionNames = () =>
 			state.current?.workflows.map((item) => item.name) ??
 			workflows.map((item) => item.name);
+		const indicator = createWorkflowIndicator(ctx.ui, {
+			key: "omp-workflow-status",
+			heading: "workflowz",
+		});
 		const session: SessionState = {
 			ctx,
 			controller,
@@ -533,8 +566,12 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 			warnings,
 			styler,
 			workflows,
+			indicator,
 		};
 		state.current = session;
+		if (ctx.hasUI) {
+			for (const warning of warnings) ctx.ui.notify(warning, "warning");
+		}
 		session.unsubscribe = controller.subscribe(() => {
 			void refreshWidget(session);
 		});
@@ -560,13 +597,13 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 			await refreshWidget(current);
 		};
 	});
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, _ctx) => {
 		const session = state.current;
 		if (!session) return;
 		await pauseRunning(session);
 		session.unsubscribe?.();
 		session.unsubscribe = undefined;
-		clearWidget(ctx);
+		clearWidget(session);
 		await session.controller.dispose();
 		state.current = undefined;
 	});

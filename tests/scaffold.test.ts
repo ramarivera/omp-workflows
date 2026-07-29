@@ -50,5 +50,10 @@ test("extension registers the lifecycle without eager commands", () => {
 	extension(api as ExtensionAPI);
 
 	assert.equal(label, "OMP Workflows");
-	assert.deepEqual(registeredEvents, ["session_start", "session_shutdown"]);
+	assert.deepEqual(registeredEvents, [
+		"input",
+		"agent_end",
+		"session_start",
+		"session_shutdown",
+	]);
 });
