@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import extension from "../src/extension.js";
+import { PLUGIN_VERSION } from "../src/version.js";
 
 test("package metadata exposes the public OMP extension contract", async () => {
 	const packageJson = JSON.parse(
@@ -21,7 +22,8 @@ test("package metadata exposes the public OMP extension contract", async () => {
 	assert.equal(packageJson.name, "@ramarivera/omp-workflows");
 	assert.equal(packageJson.license, "MIT");
 	assert.equal(packageJson.publishConfig.access, "public");
-	assert.equal(packageJson.version, "0.1.3");
+	assert.match(packageJson.version, /^\d+\.\d+\.\d+$/);
+	assert.equal(PLUGIN_VERSION, packageJson.version);
 	assert.deepEqual(Object.keys(packageJson.exports).sort(), [
 		".",
 		"./extension",
