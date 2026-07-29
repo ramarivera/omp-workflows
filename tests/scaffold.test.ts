@@ -21,7 +21,7 @@ test("package metadata exposes the public OMP extension contract", async () => {
 	assert.equal(packageJson.name, "@ramarivera/omp-workflows");
 	assert.equal(packageJson.license, "MIT");
 	assert.equal(packageJson.publishConfig.access, "public");
-	assert.equal(packageJson.version, "0.1.1");
+	assert.equal(packageJson.version, "0.1.3");
 	assert.deepEqual(Object.keys(packageJson.exports).sort(), [
 		".",
 		"./extension",
