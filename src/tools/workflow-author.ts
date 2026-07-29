@@ -20,6 +20,7 @@ export interface WorkflowAuthoringOptions {
 	projectStore?: ApprovalStore;
 	userStore?: ApprovalStore;
 	mode?: () => WorkflowUiMode;
+	onSaved?: () => Promise<void> | void;
 }
 
 function stores(options: WorkflowAuthoringOptions): {
@@ -139,6 +140,7 @@ export function registerWorkflowAuthoringTool(
 				target,
 			);
 			await selectedStore.revoke(stagedApproval.hash);
+			await options.onSaved?.();
 			return {
 				content: [
 					{

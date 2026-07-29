@@ -324,8 +324,8 @@ describe("status and inspect", () => {
 	});
 	test("renders multiple runs", () => {
 		const value = renderWorkflowStatus([makeRun("a"), makeRun("b")]);
-		expect(value).toContain("a running");
-		expect(value).toContain("\nb running");
+		expect(value).toContain("▶ a  running");
+		expect(value).toContain("\n\n▶ b  running");
 	});
 	test("inspect exposes blocked deps artifacts model prompt errors and results", () => {
 		const value = inspectWorkflow(

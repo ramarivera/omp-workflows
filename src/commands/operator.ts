@@ -60,6 +60,8 @@ export interface RegisterWorkflowCommandsOptions {
 	maxWidth?: number;
 	/** Optional resolver used to refresh mode at command time. Overrides `mode`. */
 	getMode?: () => WorkflowUiMode;
+	/** Dynamic presentation options, including OMP styling and discovered workflows. */
+	getRenderOptions?: () => RenderStatusOptions;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -100,13 +102,11 @@ function formatSuccess(
 			runs.push(item);
 		}
 		return runs.length === 0
-			? renderEmptyState(mode)
-			: runs.map((run) => renderWorkflowRun(run, mode, options)).join("\n");
+			? renderEmptyState(mode, options)
+			: runs.map((run) => renderWorkflowRun(run, mode, options)).join("\n\n");
 	}
 	if (isWorkflowRun(value)) {
-		return mode === "dashboard"
-			? renderWorkflowRun(value, mode, options)
-			: `${value.id} · ${value.status}`;
+		return renderWorkflowRun(value, mode, options);
 	}
 	return fallbackPayload(command, value);
 }
@@ -140,7 +140,9 @@ export function registerWorkflowCommands(
 ): void {
 	const resolveMode =
 		options.getMode ?? (() => options.mode ?? DEFAULT_UI_MODE);
-	const renderOptions: RenderStatusOptions = { maxWidth: options.maxWidth };
+	const resolveRenderOptions =
+		options.getRenderOptions ??
+		((): RenderStatusOptions => ({ maxWidth: options.maxWidth }));
 	pi.registerCommand("workflow", {
 		description: "Create, run, inspect, and control durable workflows",
 		getArgumentCompletions: (prefix) => {
@@ -165,6 +167,7 @@ export function registerWorkflowCommands(
 		},
 		handler: async (raw, ctx) => {
 			const mode = resolveMode();
+			const renderOptions = resolveRenderOptions();
 			try {
 				await handleWorkflow(
 					raw,

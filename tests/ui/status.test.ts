@@ -58,6 +58,23 @@ describe("renderEmptyState", () => {
 		expect(text.split("\n")).toEqual(EMPTY_DASHBOARD_STATE_LINES);
 		expect(EMPTY_DASHBOARD_STATE_LINES[0]).toContain("idle");
 	});
+
+	test("known absence of definitions points to authoring", () => {
+		expect(renderEmptyState("operator", { availableWorkflows: [] })).toContain(
+			"/workflow generate",
+		);
+		expect(renderEmptyState("dashboard", { availableWorkflows: [] })).toContain(
+			"/workflow generate",
+		);
+	});
+
+	test("discovered definitions are listed as startable", () => {
+		const options = {
+			availableWorkflows: [{ name: "review", version: 2 }],
+		};
+		expect(renderEmptyState("operator", options)).toContain("review@2");
+		expect(renderEmptyState("dashboard", options)).toContain("review@2");
+	});
 });
 
 describe("summarizeWorkflow (operator single-line)", () => {
@@ -149,10 +166,9 @@ describe("renderWorkflowStatus (collection)", () => {
 			[makeRun({ id: "a" }), makeRun({ id: "b" })],
 			"operator",
 		);
-		const lines = text.split("\n");
-		expect(lines.length).toBeGreaterThanOrEqual(2);
-		expect(lines.some((line) => line.startsWith("a "))).toBe(true);
-		expect(lines.some((line) => line.startsWith("b "))).toBe(true);
+		expect(text).toContain("▶ a  running");
+		expect(text).toContain("▶ b  running");
+		expect(text).toContain("\n\n▶ b");
 	});
 
 	test("dashboard joins multiple cards separated by a blank line", () => {

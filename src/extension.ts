@@ -43,6 +43,7 @@ import {
 	type WorkflowUiMode,
 } from "./ui/mode.js";
 import { renderWorkflowStatus } from "./ui/status.js";
+import { createOmpStyler, type SemanticStyler } from "./ui/style.js";
 import { PLUGIN_VERSION } from "./version.js";
 
 type SessionState = {
@@ -52,6 +53,8 @@ type SessionState = {
 	unsubscribe?: () => void;
 	mode: WorkflowUiMode;
 	warnings: readonly string[];
+	styler: SemanticStyler;
+	workflows: Array<{ name: string; version?: number }>;
 };
 
 function stores(cwd: string): { project: ApprovalStore; user: ApprovalStore } {
@@ -145,7 +148,11 @@ function approvalMatches(
 export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 	pi.setLabel("OMP Workflows");
 	const state: { current?: SessionState } = {};
-	const authoringOptions: WorkflowAuthoringOptions = { cwd: process.cwd() };
+	const styler = createOmpStyler();
+	const authoringOptions: WorkflowAuthoringOptions = {
+		cwd: process.cwd(),
+		mode: () => state.current?.mode ?? DEFAULT_UI_MODE,
+	};
 	const canRegister = typeof pi.registerCommand === "function";
 	const delegatedController: OperatorController = {
 		start: async (definition, args, approval) => {
@@ -202,12 +209,14 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 	if (canRegister) {
 		registerWorkflowCommands(pi, delegatedController, delegatedDefinitions, {
 			getMode: () => state.current?.mode ?? DEFAULT_UI_MODE,
+			getRenderOptions: () => ({
+				maxWidth: 78,
+				styler,
+				availableWorkflows: state.current?.workflows ?? [],
+			}),
 		});
 		registerWorkflowControlTool(pi, delegatedController, delegatedDefinitions);
-		registerWorkflowAuthoringTool(pi, {
-			...authoringOptions,
-			mode: () => state.current?.mode ?? DEFAULT_UI_MODE,
-		});
+		registerWorkflowAuthoringTool(pi, authoringOptions);
 	}
 
 	const pauseRunning = async (session: SessionState): Promise<void> => {
@@ -225,7 +234,11 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 	const refreshWidget = async (session: SessionState): Promise<void> => {
 		if (!session.ctx.hasUI) return;
 		const runs = await session.controller.list();
-		const body = renderWorkflowStatus(runs, session.mode, { maxWidth: 78 });
+		const body = renderWorkflowStatus(runs, session.mode, {
+			maxWidth: 78,
+			styler: session.styler,
+			availableWorkflows: session.workflows,
+		});
 		const header = session.warnings.length
 			? `${session.warnings.join("\n")}\n`
 			: "";
@@ -496,13 +509,30 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 		};
 		definitions.completionNames = () => [];
 		const found = await definitions.discover();
-		definitions.completionNames = () => found.map((item) => item.name);
+		const workflows = found.map((item) => {
+			const definition =
+				item.definition && typeof item.definition === "object"
+					? (item.definition as { version?: unknown })
+					: undefined;
+			return {
+				name: item.name,
+				version:
+					typeof definition?.version === "number"
+						? definition.version
+						: undefined,
+			};
+		});
+		definitions.completionNames = () =>
+			state.current?.workflows.map((item) => item.name) ??
+			workflows.map((item) => item.name);
 		const session: SessionState = {
 			ctx,
 			controller,
 			definitions,
 			mode,
 			warnings,
+			styler,
+			workflows,
 		};
 		state.current = session;
 		session.unsubscribe = controller.subscribe(() => {
@@ -510,6 +540,25 @@ export default function ompWorkflowsExtension(pi: ExtensionAPI): void {
 		});
 		await controller.initialize();
 		await refreshWidget(session);
+		authoringOptions.onSaved = async () => {
+			const current = state.current;
+			if (!current) return;
+			const discovered = await current.definitions.discover();
+			current.workflows = discovered.map((item) => {
+				const definition =
+					item.definition && typeof item.definition === "object"
+						? (item.definition as { version?: unknown })
+						: undefined;
+				return {
+					name: item.name,
+					version:
+						typeof definition?.version === "number"
+							? definition.version
+							: undefined,
+				};
+			});
+			await refreshWidget(current);
+		};
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const session = state.current;

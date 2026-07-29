@@ -2,17 +2,16 @@
  * Status renderers for the OMP workflows extension.
  *
  * Two presentation styles live here:
- *  - `summarizeWorkflow(run)` — single-line compact summary used by the
- *    operator default and by machine-watch tools.
- *  - `renderWorkflowRun(run, mode)` — multi-line run card (operator) or
- *    framed Unicode card (dashboard), with progress bar in dashboard mode.
- *  - `renderWorkflowStatus(runs, mode)` — collection render; defaults to the
- *    compact one-line-per-run layout (operator) for back-compat.
+ *  - `summarizeWorkflow(run)` — single-line compact plain text used by the
+ *    operator collection view and by machine-watch tools. Intentionally
+ *    ANSI-free.
+ *  - `renderWorkflowRun(run, mode, options)` — multi-line run card (operator)
+ *    or framed Unicode card (dashboard), with semantic styling.
+ *  - `renderWorkflowStatus(runs, mode, options)` — collection render.
  *
- * The renderers are pure: same input → same output, no clock or random
- * dependencies. They tolerate arbitrary run shapes (the controller snapshots
- * often omit fields during recovery), so every accessor that reads
- * counts/totals defends with `?? 0`.
+ * The renderers accept an injectable `SemanticStyler` so tests can use the
+ * identity styler and runtime can inject the OMP theme. Width handling is
+ * based on visible width (ANSI stripped), never raw string length.
  */
 
 import type {
@@ -23,6 +22,7 @@ import type {
 	WorkflowRunStatus,
 } from "../runtime/types.js";
 import { DEFAULT_UI_MODE, type WorkflowUiMode } from "./mode.js";
+import { createIdentityStyler, type SemanticStyler } from "./style.js";
 
 export interface RenderStatusOptions {
 	/**
@@ -32,9 +32,27 @@ export interface RenderStatusOptions {
 	maxWidth?: number;
 	/** When false, the empty-state copy is omitted when there are no runs. */
 	includeEmptyState?: boolean;
+	/** Optional semantic styler; defaults to identity for deterministic tests. */
+	styler?: SemanticStyler;
+	/**
+	 * Workflow definitions known to the extension. Used to build lifecycle-aware
+	 * empty states: no definitions points to `/workflow generate`, while
+	 * definitions present lists startable workflows.
+	 */
+	availableWorkflows?: ReadonlyArray<{ name: string; version?: number }>;
 }
 
 const DEFAULT_MAX_WIDTH = 78;
+
+const ANSI_PATTERN = new RegExp(
+	`${String.fromCharCode(27)}(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])`,
+	"g",
+);
+
+/** Visible width of a string that may contain ANSI escapes. */
+function visibleWidth(text: string): number {
+	return text.replace(ANSI_PATTERN, "").length;
+}
 
 function countByStatus<T extends { status: string }>(
 	items: readonly T[] | undefined,
@@ -78,6 +96,10 @@ function formatLimit(
 	return String(value);
 }
 
+function repeatChar(char: string, length: number): string {
+	return char.repeat(Math.max(0, length));
+}
+
 const STATUS_GLYPHS: Record<WorkflowCallStatus, string> = {
 	queued: "·",
 	dispatched: "→",
@@ -101,10 +123,58 @@ const RUN_STATUS_GLYPHS: Record<WorkflowRunStatus, string> = {
 	persistence_degraded: "!",
 };
 
-export function summarizeWorkflow(run: WorkflowRun): string {
-	const counts = countByStatus(run.calls);
-	const warnings = runWarnings(run);
-	return `${run.id} ${run.status} · ${run.definition.name}@${run.definition.version} | phases=${run.phases?.length ?? 0} calls=${run.calls?.length ?? 0} queued=${counts.queued ?? 0} dispatched=${counts.dispatched ?? 0} running=${counts.running ?? 0} succeeded=${counts.succeeded ?? 0} failed=${counts.failed ?? 0} totals=agents:${run.totals?.agents ?? 0},tokens:${formatTokens(run.totals?.outputTokens)},runtime:${formatMilliseconds(run.totals?.runtimeMs)} limits=concurrency:${formatLimit(run.limits?.maxConcurrency)},agents:${formatLimit(run.limits?.maxAgents)}${warnings.length ? ` warning: ${warnings.join("; ")}` : ""}`;
+type SemanticColorKey =
+	| "accent"
+	| "success"
+	| "warning"
+	| "error"
+	| "muted"
+	| "dim"
+	| "text";
+
+const RUN_STATUS_STYLES: Record<WorkflowRunStatus, SemanticColorKey> = {
+	planned: "dim",
+	awaiting_approval: "warning",
+	running: "accent",
+	pausing: "warning",
+	paused: "warning",
+	completed: "success",
+	failed: "error",
+	cancelled: "warning",
+	persistence_degraded: "error",
+};
+
+function styleForColor(
+	styler: SemanticStyler,
+	color: SemanticColorKey,
+): (text: string) => string {
+	switch (color) {
+		case "accent":
+			return styler.accent;
+		case "success":
+			return styler.success;
+		case "warning":
+			return styler.warning;
+		case "error":
+			return styler.error;
+		case "muted":
+			return styler.muted;
+		case "dim":
+			return styler.dim;
+		case "text":
+			return styler.text;
+	}
+}
+
+function runStatusStyle(
+	styler: SemanticStyler,
+	status: WorkflowRunStatus,
+): (text: string) => string {
+	return styleForColor(styler, RUN_STATUS_STYLES[status] ?? "text");
+}
+
+function resolveStyler(options: RenderStatusOptions): SemanticStyler {
+	return options.styler ?? createIdentityStyler();
 }
 
 function runWarnings(run: WorkflowRun): string[] {
@@ -121,39 +191,74 @@ function runWarnings(run: WorkflowRun): string[] {
 	return warnings;
 }
 
-function buildOperatorRunCard(run: WorkflowRun): string {
+export function summarizeWorkflow(run: WorkflowRun): string {
 	const counts = countByStatus(run.calls);
-	const phase = run.phases?.at(-1) ?? "(no phase)";
-	const completed = (counts.succeeded ?? 0) + (counts.failed ?? 0);
-	const total = run.calls?.length ?? 0;
-	const throughput = total === 0 ? "0/0" : `${completed}/${total}`;
 	const warnings = runWarnings(run);
-	const counters = [
-		`${counts.queued ?? 0} queued`,
-		`${counts.dispatched ?? 0} dispatched`,
-		`${counts.running ?? 0} running`,
-		`${counts.succeeded ?? 0} succeeded`,
-		`${counts.failed ?? 0} failed`,
-	].join(" · ");
-	const limits = [
-		`concurrency ${formatLimit(run.limits?.maxConcurrency)}`,
-		`agents ${formatLimit(run.limits?.maxAgents)}`,
-		`tokens ${run.limits?.maxOutputTokens === undefined ? "—" : formatTokens(run.limits.maxOutputTokens)}`,
-		`runtime ${run.limits?.maxRuntimeMs === undefined ? "—" : formatMilliseconds(run.limits.maxRuntimeMs)}`,
-	].join(" · ");
-	const lines = [
-		`${run.id}  ${run.status} · ${run.definition.name}@${run.definition.version}`,
-		`├── phase: ${phase} · calls ${throughput} · agents ${run.totals?.agents ?? 0}`,
-		`│   tokens ${formatTokens(run.totals?.outputTokens)} · runtime ${formatMilliseconds(run.totals?.runtimeMs)}`,
-		`├── status: ${counters}`,
-		`├── limits: ${limits}`,
-	];
-	if (warnings.length > 0) {
-		lines.push(`└── ⚠ ${warnings.join("; ")}`);
-	} else {
-		lines.push("└── ok");
+	return `${run.id} ${run.status} · ${run.definition.name}@${run.definition.version} | phases=${run.phases?.length ?? 0} calls=${run.calls?.length ?? 0} queued=${counts.queued ?? 0} dispatched=${counts.dispatched ?? 0} running=${counts.running ?? 0} succeeded=${counts.succeeded ?? 0} failed=${counts.failed ?? 0} totals=agents:${run.totals?.agents ?? 0},tokens:${formatTokens(run.totals?.outputTokens)},runtime:${formatMilliseconds(run.totals?.runtimeMs)} limits=concurrency:${formatLimit(run.limits?.maxConcurrency)},agents:${formatLimit(run.limits?.maxAgents)}${warnings.length ? ` warning: ${warnings.join("; ")}` : ""}`;
+}
+
+type LinePart = {
+	text: string;
+	style?: (text: string) => string;
+};
+
+/** Render plain-text parts through optional style functions, truncating the last
+ *  part with an ellipsis if the total would exceed `maxVisible`. */
+function renderParts(
+	parts: LinePart[],
+	styler: SemanticStyler,
+	maxVisible: number,
+): string {
+	let used = 0;
+	let out = "";
+	for (let i = 0; i < parts.length; i++) {
+		const { text, style } = parts[i];
+		const apply = style ?? styler.text;
+		const width = visibleWidth(text);
+		if (used + width > maxVisible) {
+			const remaining = Math.max(0, maxVisible - used - 1);
+			const keep = text.slice(0, remaining);
+			out += apply(`${keep}…`);
+			break;
+		}
+		out += apply(text);
+		used += width;
 	}
-	return lines.join("\n");
+	return out;
+}
+
+interface BoxLineOptions {
+	prefix: string;
+	parts: LinePart[];
+	fill: string;
+	suffix: string;
+	styler: SemanticStyler;
+	maxWidth: number;
+	minFill?: number;
+}
+
+/** Build a framed dashboard line with width-aware fill and truncation. */
+function buildBoxLine({
+	prefix,
+	parts,
+	fill,
+	suffix,
+	styler,
+	maxWidth,
+	minFill = 0,
+}: BoxLineOptions): string {
+	const prefixW = visibleWidth(prefix);
+	const suffixW = visibleWidth(suffix);
+	const budget = Math.max(0, maxWidth - prefixW - suffixW - minFill);
+	const content = renderParts(parts, styler, budget);
+	const contentW = visibleWidth(content);
+	const fillLen = Math.max(minFill, maxWidth - prefixW - contentW - suffixW);
+	return (
+		styler.dim(prefix) +
+		content +
+		styler.dim(repeatChar(fill, fillLen)) +
+		styler.dim(suffix)
+	);
 }
 
 function progressBar(fraction: number, width = 20): string {
@@ -164,72 +269,184 @@ function progressBar(fraction: number, width = 20): string {
 	return "▓".repeat(filled) + "░".repeat(empty);
 }
 
-function clampLine(line: string, maxWidth: number): string {
-	if (line.length <= maxWidth) return line;
-	return `${line.slice(0, Math.max(0, maxWidth - 1))}…`;
+function formatOperatorStatusCounts(
+	counts: Record<string, number>,
+	styler: SemanticStyler,
+): string {
+	return [
+		`${styler.dim("queued")} ${counts.queued ?? 0}`,
+		`${styler.dim("dispatched")} ${counts.dispatched ?? 0}`,
+		`${styler.dim("running")} ${counts.running ?? 0}`,
+		`${styler.dim("succeeded")} ${counts.succeeded ?? 0}`,
+		`${styler.dim("failed")} ${counts.failed ?? 0}`,
+	].join(" · ");
 }
 
-function repeatChar(char: string, length: number): string {
-	return char.repeat(Math.max(0, length));
+function formatOperatorLimits(
+	limits: {
+		maxConcurrency?: number;
+		maxAgents?: number;
+		maxOutputTokens?: number;
+		maxRuntimeMs?: number;
+	},
+	styler: SemanticStyler,
+): string {
+	return [
+		`${styler.dim("concurrency")} ${formatLimit(limits?.maxConcurrency)}`,
+		`${styler.dim("agents")} ${formatLimit(limits?.maxAgents)}`,
+		`${styler.dim("tokens")} ${limits?.maxOutputTokens === undefined ? "—" : formatTokens(limits.maxOutputTokens)}`,
+		`${styler.dim("runtime")} ${limits?.maxRuntimeMs === undefined ? "—" : formatMilliseconds(limits.maxRuntimeMs)}`,
+	].join(" · ");
+}
+
+function buildOperatorRunCard(
+	run: WorkflowRun,
+	options: RenderStatusOptions,
+): string {
+	const styler = resolveStyler(options);
+	const counts = countByStatus(run.calls);
+	const total = run.calls?.length ?? 0;
+	const completed = (counts.succeeded ?? 0) + (counts.failed ?? 0);
+	const phase = run.phases?.at(-1) ?? "(no phase)";
+	const warnings = runWarnings(run);
+	const glyph = RUN_STATUS_GLYPHS[run.status] ?? "·";
+	const statusStyle = runStatusStyle(styler, run.status);
+	const identity = `${run.definition.name}@${run.definition.version}`;
+
+	const lines = [
+		`${styler.dim(glyph)} ${styler.text(run.id)}  ${statusStyle(run.status)} · ${styler.rainbow(identity)} · ${styler.rainbow(phase)}`,
+		`  phase: ${styler.rainbow(phase)} · calls ${completed}/${total} · agents ${run.totals?.agents ?? 0}`,
+		`  tokens ${formatTokens(run.totals?.outputTokens)} · runtime ${formatMilliseconds(run.totals?.runtimeMs)}`,
+		`  ${formatOperatorStatusCounts(counts, styler)}`,
+		`  limits: ${formatOperatorLimits(run.limits, styler)}`,
+	];
+
+	if (warnings.length > 0) {
+		lines.push(
+			`${styler.dim("└── ")}${styler.warning(`⚠ ${warnings.join("; ")}`)}`,
+		);
+	} else {
+		lines.push(`${styler.dim("└── ")}${styler.success("ok")}`);
+	}
+
+	return lines.join("\n");
 }
 
 function buildDashboardRunCard(
 	run: WorkflowRun,
 	options: RenderStatusOptions,
 ): string {
+	const styler = resolveStyler(options);
 	const maxWidth = options.maxWidth ?? DEFAULT_MAX_WIDTH;
-	const innerWidth = Math.max(20, maxWidth - 4);
 	const counts = countByStatus(run.calls);
 	const total = run.calls?.length ?? 0;
 	const completed = (counts.succeeded ?? 0) + (counts.failed ?? 0);
 	const fraction = total === 0 ? 0 : completed / total;
-	const phaseTitle = run.phases?.at(-1) ?? "(no phase)";
+	const phase = run.phases?.at(-1) ?? "(no phase)";
 	const bar = progressBar(fraction);
 	const percent = `${Math.round(fraction * 100)}%`;
-	const phaseCount = run.phases?.length ?? 0;
-	const phaseLabel = `phase ${phaseCount === 0 ? "—" : `${phaseCount}/${phaseCount}`}`;
-	const counters = [
-		`calls ${completed}/${total}`,
-		`agents ${run.totals?.agents ?? 0}`,
-		`tokens ${formatTokens(run.totals?.outputTokens)}`,
-		`runtime ${formatMilliseconds(run.totals?.runtimeMs)}`,
-	].join(" · ");
-	const budget = [
-		`agents ${formatLimit(run.limits?.maxAgents, "∞")}`,
-		`concurrency ${formatLimit(run.limits?.maxConcurrency, "∞")}`,
-		`tokens ${run.limits?.maxOutputTokens === undefined ? "—" : formatTokens(run.limits.maxOutputTokens)}`,
-		`runtime ${run.limits?.maxRuntimeMs === undefined ? "—" : formatMilliseconds(run.limits.maxRuntimeMs)}`,
-	].join(" · ");
 	const warnings = runWarnings(run);
 	const glyph = RUN_STATUS_GLYPHS[run.status] ?? "·";
-	const header = `${glyph} ${run.id} · ${run.status} · ${run.definition.name}@${run.definition.version}`;
-	const ruleLength = Math.max(1, innerWidth - header.length - 1);
-	const headerLine = clampLine(
-		`┌─ ${header} ${repeatChar("─", ruleLength)}┐`,
+	const identity = `${run.definition.name}@${run.definition.version}`;
+
+	const header = buildBoxLine({
+		prefix: "┌─ ",
+		parts: [
+			{ text: `${glyph} `, style: styler.dim },
+			{ text: run.id, style: styler.text },
+			{ text: " · ", style: styler.dim },
+			{ text: run.status, style: runStatusStyle(styler, run.status) },
+			{ text: " · ", style: styler.dim },
+			{ text: `${identity} `, style: styler.rainbow },
+		],
+		fill: "─",
+		suffix: "┐",
+		styler,
 		maxWidth,
-	);
-	const summaryLine = clampLine(`│ ${phaseTitle} · ${counters}`, maxWidth);
-	const progressLine = clampLine(
-		`│ ${bar} ${percent} · ${phaseLabel}`,
+		minFill: 1,
+	});
+
+	const summaryText = `calls ${completed}/${total} · agents ${run.totals?.agents ?? 0} · tokens ${formatTokens(run.totals?.outputTokens)} · runtime ${formatMilliseconds(run.totals?.runtimeMs)}`;
+	const summary = buildBoxLine({
+		prefix: "│ ",
+		parts: [
+			{ text: phase, style: styler.rainbow },
+			{ text: " · ", style: styler.dim },
+			{ text: summaryText, style: styler.text },
+		],
+		fill: " ",
+		suffix: "│",
+		styler,
 		maxWidth,
-	);
-	const budgetLine = clampLine(`│ budget ${budget}`, maxWidth);
-	const statusLine = clampLine(
-		`│ status ${counts.queued ?? 0}q ${counts.dispatched ?? 0}d ${counts.running ?? 0}r ${counts.succeeded ?? 0}s ${counts.failed ?? 0}f`,
+	});
+
+	const progress = buildBoxLine({
+		prefix: "│ ",
+		parts: [
+			{ text: bar, style: (text) => text },
+			{ text: " ", style: styler.dim },
+			{ text: percent, style: styler.accent },
+			{ text: " · ", style: styler.dim },
+			{ text: phase, style: styler.rainbow },
+		],
+		fill: " ",
+		suffix: "│",
+		styler,
 		maxWidth,
-	);
-	const lines = [headerLine, summaryLine, progressLine, budgetLine, statusLine];
-	if (warnings.length > 0) {
-		const warningLine = clampLine(
-			`└─ ⚠ ${warnings.join(" · ")} ${repeatChar("─", ruleLength)}┘`,
-			maxWidth,
-		);
-		lines.push(warningLine);
-	} else {
-		const okRule = repeatChar("─", Math.max(1, innerWidth - 1));
-		lines.push(clampLine(`└${okRule}┘`, maxWidth));
-	}
-	return lines.join("\n");
+	});
+
+	const budgetText = `agents ${formatLimit(run.limits?.maxAgents, "∞")} · concurrency ${formatLimit(run.limits?.maxConcurrency, "∞")} · tokens ${run.limits?.maxOutputTokens === undefined ? "—" : formatTokens(run.limits.maxOutputTokens)} · runtime ${run.limits?.maxRuntimeMs === undefined ? "—" : formatMilliseconds(run.limits.maxRuntimeMs)}`;
+	const budget = buildBoxLine({
+		prefix: "│ budget ",
+		parts: [{ text: budgetText, style: styler.text }],
+		fill: " ",
+		suffix: "│",
+		styler,
+		maxWidth,
+	});
+
+	const statusText = `queued ${counts.queued ?? 0} · dispatched ${counts.dispatched ?? 0} · running ${counts.running ?? 0} · succeeded ${counts.succeeded ?? 0} · failed ${counts.failed ?? 0}`;
+	const statusLine = buildBoxLine({
+		prefix: "│ status ",
+		parts: [{ text: statusText, style: styler.text }],
+		fill: " ",
+		suffix: "│",
+		styler,
+		maxWidth,
+	});
+
+	const footer = buildBoxLine({
+		prefix: "└─ ",
+		parts: [
+			{
+				text: `⚠ ${warnings.join(" · ")}`,
+				style: styler.warning,
+			},
+		],
+		fill: "─",
+		suffix: "┘",
+		styler,
+		maxWidth,
+		minFill: 1,
+	});
+
+	const okFooter = buildBoxLine({
+		prefix: "└",
+		parts: [],
+		fill: "─",
+		suffix: "┘",
+		styler,
+		maxWidth,
+	});
+
+	return [
+		header,
+		summary,
+		progress,
+		budget,
+		statusLine,
+		warnings.length > 0 ? footer : okFooter,
+	].join("\n");
 }
 
 export function renderWorkflowRun(
@@ -238,7 +455,7 @@ export function renderWorkflowRun(
 	options: RenderStatusOptions = {},
 ): string {
 	if (mode === "dashboard") return buildDashboardRunCard(run, options);
-	return buildOperatorRunCard(run);
+	return buildOperatorRunCard(run, options);
 }
 
 export const EMPTY_OPERATOR_STATE =
@@ -251,11 +468,123 @@ export const EMPTY_DASHBOARD_STATE_LINES = [
 	"└────────────────────────────────────────────────┘",
 ];
 
+function renderAvailableList(
+	workflows: ReadonlyArray<{ name: string; version?: number }>,
+): string {
+	return workflows.map((w) => `${w.name}@${w.version ?? 0}`).join(", ");
+}
+
+function renderOperatorEmptyState(
+	styler: SemanticStyler,
+	available?: ReadonlyArray<{ name: string; version?: number }>,
+): string {
+	if (available === undefined) return EMPTY_OPERATOR_STATE;
+	if (available.length === 0) {
+		return `${styler.dim("No workflow definitions yet.")} ${styler.warning("Use /workflow generate to create one.")}`;
+	}
+	return `No active workflow runs. Available: ${renderAvailableList(available)}. Use /workflow start <name> to launch.`;
+}
+
+function renderDashboardEmptyState(
+	styler: SemanticStyler,
+	available: ReadonlyArray<{ name: string; version?: number }> | undefined,
+	maxWidth: number,
+): string {
+	if (available === undefined) return EMPTY_DASHBOARD_STATE_LINES.join("\n");
+
+	if (available.length === 0) {
+		return [
+			buildBoxLine({
+				prefix: "┌─ ",
+				parts: [{ text: "no definitions ", style: styler.warning }],
+				fill: "─",
+				suffix: "┐",
+				styler,
+				maxWidth,
+				minFill: 1,
+			}),
+			buildBoxLine({
+				prefix: "│ ",
+				parts: [
+					{
+						text: "Use /workflow generate to create a workflow.",
+						style: styler.text,
+					},
+				],
+				fill: " ",
+				suffix: "│",
+				styler,
+				maxWidth,
+			}),
+			buildBoxLine({
+				prefix: "└",
+				parts: [],
+				fill: "─",
+				suffix: "┘",
+				styler,
+				maxWidth,
+			}),
+		].join("\n");
+	}
+
+	const list = renderAvailableList(available);
+	const intro = "No active runs. Start one with /workflow start <name>.";
+	const fitList =
+		list.length > maxWidth - 4
+			? `${list.slice(0, Math.max(0, maxWidth - 5))}…`
+			: list;
+
+	return [
+		buildBoxLine({
+			prefix: "┌─ ",
+			parts: [{ text: "idle ", style: styler.muted }],
+			fill: "─",
+			suffix: "┐",
+			styler,
+			maxWidth,
+			minFill: 1,
+		}),
+		buildBoxLine({
+			prefix: "│ ",
+			parts: [{ text: intro, style: styler.text }],
+			fill: " ",
+			suffix: "│",
+			styler,
+			maxWidth,
+		}),
+		buildBoxLine({
+			prefix: "│ ",
+			parts: [{ text: `Available: ${fitList}`, style: styler.dim }],
+			fill: " ",
+			suffix: "│",
+			styler,
+			maxWidth,
+		}),
+		buildBoxLine({
+			prefix: "└",
+			parts: [],
+			fill: "─",
+			suffix: "┘",
+			styler,
+			maxWidth,
+		}),
+	].join("\n");
+}
+
 export function renderEmptyState(
 	mode: WorkflowUiMode = DEFAULT_UI_MODE,
+	options: RenderStatusOptions = {},
 ): string {
-	if (mode === "dashboard") return EMPTY_DASHBOARD_STATE_LINES.join("\n");
-	return EMPTY_OPERATOR_STATE;
+	const styler = resolveStyler(options);
+	const maxWidth = options.maxWidth ?? DEFAULT_MAX_WIDTH;
+	if (mode === "dashboard") {
+		return renderDashboardEmptyState(
+			styler,
+			options.availableWorkflows,
+			maxWidth,
+		);
+	}
+	return renderOperatorEmptyState(styler, options.availableWorkflows);
 }
 
 export function renderWorkflowStatus(
@@ -265,12 +594,14 @@ export function renderWorkflowStatus(
 ): string {
 	if (runs.length === 0) {
 		if (options.includeEmptyState === false) return "";
-		return renderEmptyState(mode);
+		return renderEmptyState(mode, options);
 	}
 	if (mode === "dashboard") {
-		return runs.map((run) => renderWorkflowRun(run, mode, options)).join("\n");
+		return runs
+			.map((run) => renderWorkflowRun(run, mode, options))
+			.join("\n\n");
 	}
-	return runs.map(summarizeWorkflow).join("\n");
+	return runs.map((run) => renderWorkflowRun(run, mode, options)).join("\n\n");
 }
 
 /**
@@ -298,11 +629,14 @@ export function summarizeAttemptStatuses(
 	attempts: readonly { status: WorkflowAttemptStatus }[] | undefined,
 ): string {
 	if (!attempts || attempts.length === 0) return "no attempts";
-	const counts: Record<string, number> = {};
-	for (const attempt of attempts) {
-		counts[attempt.status] = (counts[attempt.status] ?? 0) + 1;
-	}
-	return Object.entries(counts)
-		.map(([status, count]) => `${count} ${status}`)
-		.join(", ");
+	const counts = countByStatus(attempts);
+	return [
+		`queued=${counts.queued ?? 0}`,
+		`dispatched=${counts.dispatched ?? 0}`,
+		`running=${counts.running ?? 0}`,
+		`succeeded=${counts.succeeded ?? 0}`,
+		`failed=${counts.failed ?? 0}`,
+		`cancelled=${counts.cancelled ?? 0}`,
+		`unknown=${counts.unknown ?? 0}`,
+	].join(" ");
 }
